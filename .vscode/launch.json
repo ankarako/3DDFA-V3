@@ -20,7 +20,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--input_video", "/media/perukas/home/dev/datasets/splatting-avatar/marcel/video.mp4",
-                "--output_dir", "/media/perukas/home/dev/datasets/splatting-avatar/marcel/preproc/"
+                "--output_dir", "/media/perukas/home/dev/datasets/splatting-avatar/marcel/3ddfav3/"
             ]
         }
     ]
