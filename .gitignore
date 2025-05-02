@@ -2,3 +2,4 @@ assets
 .weights
 .conf
 .venv
+.vscode
