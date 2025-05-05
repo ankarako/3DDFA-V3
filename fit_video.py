@@ -13,6 +13,10 @@ from util.io import back_resize_ldms, back_resize_crop_img, plot_kpts
 from tqdm import tqdm
 import json
 
+import mediapipe as mp
+# mediapipe lmks indices
+# https://github.com/tensorflow/tfjs-models/blob/838611c02f51159afdd77469ce67f0e26b7bbb23/face-landmarks-detection/src/mediapipe-facemesh/keypoints.ts
+
 k_iscrop = True
 k_detector = "retinaface"
 k_ldm68 = True
@@ -181,6 +185,60 @@ def make_proc_grid(img, img_lmks68, img_lmks106, img_lmks1062d, img_lmks134, seg
     return grid
 
 
+class EyeTracking:
+    def __init__(self):
+        """
+        """
+        self.face_mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5
+        )
+        self.eye_indices = [473, 468]
+    
+    def process(self, img: np.ndarray) -> np.ndarray:
+        """
+        """
+        results = self.face_mesh.process(img)
+        if not results.multi_face_landmarks:
+            return None
+        else:
+            eye_lmks = []
+            # convert lmks to tensor
+            lmks = results.multi_face_landmarks[0]
+            for idx in self.eye_indices:
+                lm = lmks.landmark[idx]
+
+                # convert to image coordinates
+                x_px = lm.x * img.shape[0]
+                y_px = lm.y * img.shape[1]
+                z_rel = lm.z
+
+                eye_lmks.append([x_px, y_px, z_rel])
+            eye_lmks = np.array(eye_lmks)
+            return eye_lmks
+
+k_colors = {
+    'red': (255, 0, 0),
+    'green': (0, 255, 0),
+    'blue': (0, 0, 255)
+}
+
+def draw_lmks_2d(img: np.ndarray, lmks: np.ndarray, color: str) -> torch.Tensor:
+    """
+    Draw the specified landmarks on the given image
+
+    :param img The image on which to draw the landmarks
+    :param lmks The landmarks to draw
+    :param color The color to use
+    """
+    # convert to numpy
+    for lmk in lmks:
+        img = cv2.circle(img, (round(lmk[0].item()), round(lmk[1].item())), 2, color=k_colors[color], thickness=-1)
+    # convert to torch again
+    return img
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Fit 3DDFA v3 on a face video")
     parser.add_argument("--input_video", type=str, help="The path to the video to load.")
@@ -202,6 +260,8 @@ if __name__ == "__main__":
     recon_model = face_model(k_model_args)
     facebox_detector = face_box(k_facebox_args).detector
     video_player = VideoPlayer(input_video_path)
+    eye_tracking = EyeTracking()
+
     height, width = video_player.height, video_player.width
     print("Modules Initialized.")
 
@@ -244,6 +304,9 @@ if __name__ == "__main__":
         seg = results['seg']
         seg_visible = results['seg_visible']
 
+        # infer eye landmarks with mediapipe
+        eye_lmks = eye_tracking.process(np.asarray(frame_im))
+
         # interpolate landmarks and segmentations to video dimensions
         lmks68, img_lmks68 = process_lmks(lmks_68, trans_params, frame_im)
         lmks106, img_lmks106 = process_lmks(lmks_106, trans_params, frame_im)
@@ -259,6 +322,7 @@ if __name__ == "__main__":
             'lmks106': lmks106.tolist(),
             'lmks1062d': lmks1062d.tolist(),
             'lmks134': lmks134.tolist(),
+            'eyes': eye_lmks.tolist()
         }
         with open(output_lmk_path, 'w') as outfd:
             json.dump(output_lmk_dict, outfd)
@@ -273,6 +337,13 @@ if __name__ == "__main__":
         seg_vis_im = Image.fromarray(seg_visible)
         seg_vis_im.save(output_seg_visible_path)
 
+        # save lmk image
+        img_lmks_face = draw_lmks_2d(np.asarray(frame_im).copy(), lmks68, 'green')
+        img_lmks_face = draw_lmks_2d(img_lmks_face, eye_lmks[0:1], 'red') # red should be left
+        img_lmks_face = draw_lmks_2d(img_lmks_face, eye_lmks[1:], 'blue') # blue should be right
+        img_lmks = Image.fromarray(img_lmks_face)
+        output_lmk_path = os.path.join(output_path, f'lmks-pred-{idx}.png')
+        img_lmks.save(output_lmk_path)
         img_grid = make_proc_grid(frame_im, img_lmks68, img_lmks106, img_lmks1062d, img_lmks134, seg_viz, seg_visible_viz)
         k_output_video_frames += [img_grid]
     
