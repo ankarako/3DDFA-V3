@@ -19,8 +19,8 @@
             "program": "${workspaceFolder}/fit_video.py",
             "console": "integratedTerminal",
             "args": [
-                "--input_video", "/media/perukas/home/dev/datasets/splatting-avatar/marcel/video.mp4",
-                "--output_dir", "/media/perukas/home/dev/datasets/splatting-avatar/marcel/3ddfav3/"
+                "--input_video", "/media/ankarako/data/dev/datasets/nersemble/data/017/sequences/EMO-1-shout+laugh/images/cam_220700191.mp4",
+                "--output_dir", "/media/ankarako/data/dev/datasets/nersemble/3ddfav3/017/EMO-1-shout+laugh/"
             ]
         }
     ]

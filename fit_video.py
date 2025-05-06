@@ -211,8 +211,8 @@ class EyeTracking:
                 lm = lmks.landmark[idx]
 
                 # convert to image coordinates
-                x_px = lm.x * img.shape[0]
-                y_px = lm.y * img.shape[1]
+                x_px = lm.x * img.shape[1]
+                y_px = lm.y * img.shape[0]
                 z_rel = lm.z
 
                 eye_lmks.append([x_px, y_px, z_rel])
@@ -235,7 +235,7 @@ def draw_lmks_2d(img: np.ndarray, lmks: np.ndarray, color: str) -> torch.Tensor:
     """
     # convert to numpy
     for lmk in lmks:
-        img = cv2.circle(img, (round(lmk[0].item()), round(lmk[1].item())), 2, color=k_colors[color], thickness=-1)
+        img = cv2.circle(img, (round(lmk[0].item()), round(lmk[1].item())), 5, color=k_colors[color], thickness=-1)
     # convert to torch again
     return img
 
