@@ -22,6 +22,18 @@
                 "--input_video", "/media/ankarako/data/dev/datasets/nersemble/data/017/sequences/EMO-1-shout+laugh/images/cam_220700191.mp4",
                 "--output_dir", "/media/ankarako/data/dev/datasets/nersemble/3ddfav3/017/EMO-1-shout+laugh/"
             ]
+        },
+
+        {
+            "name": "[fit-nersemble] dry-run",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/process_nersemble_data.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--data_root", "/media/ankarako/data/dev/datasets/nersemble/data/",
+                "--output_root", "/media/ankarako/data/dev/datasets/nersemble/processed-3ddfav3/"
+            ]
         }
     ]
 }
