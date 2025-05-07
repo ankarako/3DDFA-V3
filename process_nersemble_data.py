@@ -15,6 +15,8 @@ import json
 import shutil
 import mediapipe as mp
 import multiprocessing
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # mediapipe lmks indices
 # https://github.com/tensorflow/tfjs-models/blob/838611c02f51159afdd77469ce67f0e26b7bbb23/face-landmarks-detection/src/mediapipe-facemesh/keypoints.ts
@@ -281,7 +283,8 @@ if __name__ == "__main__":
             os.mkdir(output_video_data_dir)
         
         video_player = VideoPlayer(video_filepath)
-        for idx, frame in enumerate(video_player):
+        video_loop = tqdm(enumerate(video_player), total=len(video_player), desc=f'Processing video: {video_filename}')
+        for idx, frame in video_loop:
             output_path = os.path.join(output_video_data_dir, f'frame-{idx}')
             if not os.path.exists(output_path):
                 os.mkdir(output_path)
