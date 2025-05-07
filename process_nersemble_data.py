@@ -14,7 +14,6 @@ from tqdm import tqdm
 import json
 import shutil
 import mediapipe as mp
-import multiprocessing
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -245,14 +244,99 @@ def draw_lmks_2d(img: np.ndarray, lmks: np.ndarray, color: str) -> torch.Tensor:
     # convert to torch again
     return img
 
-print("Initializing modules...")
-recon_model = face_model(k_model_args)
-facebox_detector = face_box(k_facebox_args).detector
-device = torch.device(k_device)
-eye_tracking = EyeTracking()
+
+def process_video(video_filepath: str, output_dir: str, recon_model, facebox_detector, eye_tracking, device):
+    """
+    """
+    video_filename = os.path.basename(video_filepath).split('.')[0]
+    output_video_data_dir = os.path.join(output_dir, video_filename)
+    if not os.path.exists(output_video_data_dir):
+        os.mkdir(output_video_data_dir)
+    
+    video_player = VideoPlayer(video_filepath)
+    video_loop = tqdm(range(video_player.nframes), total=len(video_player), desc=f'Processing video: {video_filename}')
+    for idx in video_loop:
+        frame = video_player.get_frame(idx)
+        if frame is None: 
+            continue
+        if (frame == 0).all():
+            continue
+
+        output_path = os.path.join(output_video_data_dir, f'frame-{idx}')
+        if not os.path.exists(output_path):
+            os.mkdir(output_path)
+        
+
+        output_frame_filepath = os.path.join(output_path, 'frame.png')
+        output_seg_path = os.path.join(output_path, 'seg.png')
+        output_seg_vis_path = os.path.join(output_path, 'seg_vis.png')
+        output_lmk_path = os.path.join(output_path, 'lmks.json')
+
+        out_frame_exists = os.path.exists(output_frame_filepath)
+        out_seg_exists = os.path.exists(output_seg_vis_path)
+        out_lmk_exists = os.path.exists(output_lmk_path)
+        if out_frame_exists and out_seg_exists and out_lmk_exists:
+            continue
+            
+        # convert frame to pillow image
+        frame_im = (frame.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+        frame_im = Image.fromarray(frame_im).convert('RGB')
+
+        
+        trans_params, im_tensor = facebox_detector(frame_im)
+        recon_model.input_img = im_tensor.to(device)
+        results = recon_model.forward()
+
+        lmks_68 = results['ldm68'][0]
+        lmks_106 = results['ldm106'][0]
+        lmks_1062d = results['ldm106_2d'][0]
+        lmks_134 = results['ldm134'][0]
+        seg = results['seg']
+        seg_visible = results['seg_visible']
+
+        # infer eye landmarks with mediapipe
+        eye_lmks = eye_tracking.process(np.asarray(frame_im))
+        
+        # interpolate landmarks and segmentations to video dimensions
+        lmks68, img_lmks68 = process_lmks(lmks_68, trans_params, frame_im)
+        lmks106, img_lmks106 = process_lmks(lmks_106, trans_params, frame_im)
+        lmks1062d, img_lmks1062d = process_lmks(lmks_1062d, trans_params, frame_im)
+        lmks134, img_lmks134 = process_lmks(lmks_134, trans_params, frame_im)
+        
+        seg = process_seg(seg, frame_im, trans_params)
+        seg_visible = process_seg(seg_visible, frame_im, trans_params)
+
+        # save outputs
+        output_lmk_dict = {
+            'lmks68': lmks68.tolist(),
+            'lmks106': lmks106.tolist(),
+            'lmks1062d': lmks1062d.tolist(),
+            'lmks134': lmks134.tolist(),
+            'eyes': eye_lmks.tolist()
+        }
+
+        with open(output_lmk_path, 'w') as outfd:
+            json.dump(output_lmk_dict, outfd)
+        
+        # save output frame
+        frame_im.save(output_frame_filepath)
+        seg, seg_viz = seg_to_png(seg)
+        seg_visible, seg_visible_viz = seg_to_png(seg_visible)
+
+        seg_im = Image.fromarray(seg)
+        seg_im.save(output_seg_path)
+        seg_vis_im = Image.fromarray(seg_visible)
+        seg_vis_im.save(output_seg_vis_path)
+
+        # save lmk image
+        img_lmks_face = draw_lmks_2d(np.asarray(frame_im).copy(), lmks68, 'green')
+        img_lmks_face = draw_lmks_2d(img_lmks_face, eye_lmks[0:1], 'red') # red should be left
+        img_lmks_face = draw_lmks_2d(img_lmks_face, eye_lmks[1:], 'blue') # blue should be right
+        img_lmks = Image.fromarray(img_lmks_face)
+        output_lmk_path = os.path.join(output_path, f'lmks-pred-{idx}.png')
+        img_lmks.save(output_lmk_path)
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method('spawn')
     parser = argparse.ArgumentParser("Fit 3DDFA v3 on a face video")
     parser.add_argument("--data_root", type=str, help="The root directory of the nersemble data")
     parser.add_argument("--output_root", type=str, help="The root directory of the output")
@@ -269,98 +353,11 @@ if __name__ == "__main__":
     if not os.path.exists(output_root):
         os.mkdir(output_root)
 
-
-
-
-    def process_video(video_filepath: str, output_dir: str):
-        """
-        """
-        global recon_model, facebox_detector, eye_tracking, device
-
-        video_filename = os.path.basename(video_filepath).split('.')[0]
-        output_video_data_dir = os.path.join(output_dir, video_filename)
-        if not os.path.exists(output_video_data_dir):
-            os.mkdir(output_video_data_dir)
-        
-        video_player = VideoPlayer(video_filepath)
-        video_loop = tqdm(enumerate(video_player), total=len(video_player), desc=f'Processing video: {video_filename}')
-        for idx, frame in video_loop:
-            output_path = os.path.join(output_video_data_dir, f'frame-{idx}')
-            if not os.path.exists(output_path):
-                os.mkdir(output_path)
-
-            output_frame_filepath = os.path.join(output_path, 'frame.png')
-            output_seg_path = os.path.join(output_path, 'seg.png')
-            output_seg_vis_path = os.path.join(output_path, 'seg_vis.png')
-            output_lmk_path = os.path.join(output_path, 'lmks.json')
-
-            out_frame_exists = os.path.exists(output_frame_filepath)
-            out_seg_exists = os.path.exists(output_seg_vis_path)
-            out_lmk_exists = os.path.exists(output_lmk_path)
-            if out_frame_exists and out_seg_exists and out_lmk_exists:
-                continue
-                
-            # convert frame to pillow image
-            frame_im = (frame.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-            frame_im = Image.fromarray(frame_im).convert('RGB')
-
-            try:
-                trans_params, im_tensor = facebox_detector(frame_im)
-                recon_model.input_img = im_tensor.to(device)
-                results = recon_model.forward()
-
-                lmks_68 = results['ldm68'][0]
-                lmks_106 = results['ldm106'][0]
-                lmks_1062d = results['ldm106_2d'][0]
-                lmks_134 = results['ldm134'][0]
-                seg = results['seg']
-                seg_visible = results['seg_visible']
-
-                # infer eye landmarks with mediapipe
-                eye_lmks = eye_tracking.process(np.asarray(frame_im))
-                
-                # interpolate landmarks and segmentations to video dimensions
-                lmks68, img_lmks68 = process_lmks(lmks_68, trans_params, frame_im)
-                lmks106, img_lmks106 = process_lmks(lmks_106, trans_params, frame_im)
-                lmks1062d, img_lmks1062d = process_lmks(lmks_1062d, trans_params, frame_im)
-                lmks134, img_lmks134 = process_lmks(lmks_134, trans_params, frame_im)
-                
-                seg = process_seg(seg, frame_im, trans_params)
-                seg_visible = process_seg(seg_visible, frame_im, trans_params)
-
-                # save outputs
-                output_lmk_dict = {
-                    'lmks68': lmks68.tolist(),
-                    'lmks106': lmks106.tolist(),
-                    'lmks1062d': lmks1062d.tolist(),
-                    'lmks134': lmks134.tolist(),
-                    'eyes': eye_lmks.tolist()
-                }
-
-                with open(output_lmk_path, 'w') as outfd:
-                    json.dump(output_lmk_dict, outfd)
-                
-                # save output frame
-                frame_im.save(output_frame_filepath)
-                seg, seg_viz = seg_to_png(seg)
-                seg_visible, seg_visible_viz = seg_to_png(seg_visible)
-
-                seg_im = Image.fromarray(seg)
-                seg_im.save(output_seg_path)
-                seg_vis_im = Image.fromarray(seg_visible)
-                seg_vis_im.save(output_seg_vis_path)
-
-                # save lmk image
-                img_lmks_face = draw_lmks_2d(np.asarray(frame_im).copy(), lmks68, 'green')
-                img_lmks_face = draw_lmks_2d(img_lmks_face, eye_lmks[0:1], 'red') # red should be left
-                img_lmks_face = draw_lmks_2d(img_lmks_face, eye_lmks[1:], 'blue') # blue should be right
-                img_lmks = Image.fromarray(img_lmks_face)
-                output_lmk_path = os.path.join(output_path, f'lmks-pred-{idx}.png')
-                img_lmks.save(output_lmk_path)
-            except Exception as e:
-                print(f"Exception processing: {video_filepath}: {e}")
-                import traceback
-                traceback.print_exc()
+    print("Initializing modules...")
+    recon_model = face_model(k_model_args)
+    facebox_detector = face_box(k_facebox_args).detector
+    device = torch.device(k_device)
+    eye_tracking = EyeTracking()
 
     nersemble_ids = os.listdir(data_root)
     id_loop = tqdm(nersemble_ids, desc="Processing ID", total=len(nersemble_ids))
@@ -416,120 +413,9 @@ if __name__ == "__main__":
             
 
             # parallel processing videos
-            args = [(nersemble_expression_camera_filepath, output_expression_dir) for nersemble_expression_camera_filepath in nersemble_expression_camera_filepaths]
-            video_loop = tqdm(args, total=len(args), desc='processing video')
-            for camera_filepath, out_expression_dir in video_loop:
-                process_video(camera_filepath, out_expression_dir)
-            # with multiprocessing.Pool(k_WORLD_SIZE) as pool:
-            #     res = pool.starmap_async(process_video, args)
-            #     res.get()
-
-            
-
-
-
-
-
-
-    # video_player = VideoPlayer(input_video_path)
-    
-
-    # height, width = video_player.height, video_player.width
-    # print("Modules Initialized.")
-
-    # k_output_video_frames = []
-
-
-    
-    # video_loop = tqdm(enumerate(video_player), total=video_player.nframes, desc="Processing video")
-    # for idx, frame in video_loop:
-    #     # create output directory and check if output
-    #     # data exist so we can skip them
-    #     output_path = os.path.join(output_dir, f"frame-{idx}")
-    #     if not os.path.exists(output_path):
-    #         os.mkdir(output_path)
-
-    #     output_frame_filepath = os.path.join(output_path, f"frame-{idx}.png")
-    #     output_seg_path = os.path.join(output_path, f"seg-{idx}.png")
-    #     output_seg_visible_path = os.path.join(output_path, f'seg-vis-{idx}.png')
-    #     output_lmk_path = os.path.join(output_path, f"lmks-{idx}.json")
-        
-    #     out_frame_exists = os.path.exists(output_frame_filepath)
-    #     out_seg_exists = os.path.exists(output_seg_path)
-    #     out_lmk_data_exists = os.path.exists(output_lmk_path)
-    #     if out_frame_exists and out_seg_exists and out_lmk_data_exists:
-    #         continue
-
-    #     # convert frame to Pillow.Image
-    #     frame_im = (frame.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-    #     frame_im = Image.fromarray(frame_im).convert('RGB')
-
-
-    #     trans_params, im_tensor = facebox_detector(frame_im)
-    #     recon_model.input_img = im_tensor.to(device)
-    #     results = recon_model.forward()
-
-    #     lmks_68 = results['ldm68'][0]
-    #     lmks_106 = results['ldm106'][0]
-    #     lmks_1062d = results['ldm106_2d'][0]
-    #     lmks_134 = results['ldm134'][0]
-    #     seg = results['seg']
-    #     seg_visible = results['seg_visible']
-
-    #     # infer eye landmarks with mediapipe
-    #     eye_lmks = eye_tracking.process(np.asarray(frame_im))
-
-    #     # interpolate landmarks and segmentations to video dimensions
-    #     lmks68, img_lmks68 = process_lmks(lmks_68, trans_params, frame_im)
-    #     lmks106, img_lmks106 = process_lmks(lmks_106, trans_params, frame_im)
-    #     lmks1062d, img_lmks1062d = process_lmks(lmks_1062d, trans_params, frame_im)
-    #     lmks134, img_lmks134 = process_lmks(lmks_1062d, trans_params, frame_im)
-        
-    #     seg = process_seg(seg, frame_im, trans_params)
-    #     seg_visible = process_seg(seg_visible, frame_im, trans_params)
-
-    #     # save outputs
-    #     output_lmk_dict = {
-    #         'lmks68': lmks68.tolist(),
-    #         'lmks106': lmks106.tolist(),
-    #         'lmks1062d': lmks1062d.tolist(),
-    #         'lmks134': lmks134.tolist(),
-    #         'eyes': eye_lmks.tolist()
-    #     }
-    #     with open(output_lmk_path, 'w') as outfd:
-    #         json.dump(output_lmk_dict, outfd)
-        
-    #     # save output frame
-    #     frame_im.save(output_frame_filepath)
-    #     seg, seg_viz = seg_to_png(seg)
-    #     seg_visible, seg_visible_viz = seg_to_png(seg_visible)
-        
-    #     seg_im = Image.fromarray(seg)
-    #     seg_im.save(output_seg_path)
-    #     seg_vis_im = Image.fromarray(seg_visible)
-    #     seg_vis_im.save(output_seg_visible_path)
-
-    #     # save lmk image
-    #     img_lmks_face = draw_lmks_2d(np.asarray(frame_im).copy(), lmks68, 'green')
-    #     img_lmks_face = draw_lmks_2d(img_lmks_face, eye_lmks[0:1], 'red') # red should be left
-    #     img_lmks_face = draw_lmks_2d(img_lmks_face, eye_lmks[1:], 'blue') # blue should be right
-    #     img_lmks = Image.fromarray(img_lmks_face)
-    #     output_lmk_path = os.path.join(output_path, f'lmks-pred-{idx}.png')
-    #     img_lmks.save(output_lmk_path)
-    #     img_grid = make_proc_grid(frame_im, img_lmks68, img_lmks106, img_lmks1062d, img_lmks134, seg_viz, seg_visible_viz)
-    #     k_output_video_frames += [img_grid]
-    
-    # print("Outputing processed video")
-    # height, width = k_output_video_frames[0].shape[:2]
-    # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    # output_proc_video_filepath = os.path.join(output_dir, 'video-processed.mp4')
-    # video_writer = cv2.VideoWriter(output_proc_video_filepath, fourcc, 30.0, (width, height))
-
-    # for frame in tqdm(k_output_video_frames, total=len(k_output_video_frames), desc="Exporting video"):
-    #     video_writer.write(frame)
-    # video_writer.release()
-
-
-
-
-
+            video_loop = tqdm(nersemble_expression_camera_filepaths, total=len(nersemble_expression_camera_filepaths), desc='processing expression')
+            for camera_filepath in video_loop:
+                try:
+                    process_video(camera_filepath, output_expression_dir, recon_model, facebox_detector, eye_tracking, device)
+                except Exception as e:
+                    print(e)
